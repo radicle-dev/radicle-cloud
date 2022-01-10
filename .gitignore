@@ -1,0 +1,10 @@
+.env
+.env.operator
+keys/*
+/contract/out
+node_modules
+.solhint.json
+package.json
+TODO
+COMMANDS
+ansible/*.retry

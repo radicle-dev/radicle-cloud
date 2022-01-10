@@ -1,0 +1,110 @@
+# SPDX-License-Identifier: Apache-2.0
+
+#################################################
+# Initial Server Setup for Radicle Components
+#################################################
+---
+- hosts: all
+  vars:
+      ansible_python_interpreter: /usr/bin/python3
+      ansible_ssh_common_args: '-o StrictHostKeyChecking=no'
+      #RAD_SUBGRAPH: https://...
+      #RAD_RPC_URL: wss://...
+      #RAD_ORG: 0x...
+      #RAD_DOMAIN: domain.tld
+
+  tasks: 
+    - name: Create Directories
+      file:
+        path: "{{ item }}"
+        state: directory
+      with_items:
+      - /app/radicle/root
+
+    #- name: Copy Org Identity File
+    #  copy:
+    #    src: ../keys/{{ RAD_ORG }}.key
+    #    dest: /app/radicle/identity
+
+    - name: Add RAD Environment Variables
+      lineinfile: dest=/root/.profile line="{{ item }}" insertafter='EOF' regexp="{{ item }}" state=present
+      with_items:
+      - 'export RAD_SUBGRAPH={{ RAD_SUBGRAPH }}'
+      - 'export RAD_ORG={{ RAD_ORG }}'
+      - 'export RAD_RPC_URL={{ RAD_RPC_URL }}'
+
+    - name: Install pip3
+      apt: 
+        name: python3-pip
+        state: present
+        update_cache: yes
+
+    - name: Install docker-py
+      pip:
+        name: docker-py
+
+    - name: Create network for containers
+      docker_network:
+        name: radicle_containers
+
+    - name: Start org-node
+      docker_container:
+        name: org-node
+        image: gcr.io/radicle-services/org-node:latest
+        volumes:
+          - /app:/app
+        #ports:
+        #  - "8776:8776/udp"
+        network_mode: radicle_containers
+        command: "--subgraph {{ RAD_SUBGRAPH }} --orgs {{ RAD_ORG }} --rpc-url {{ RAD_RPC_URL }}"
+
+    - name: Start http-api
+      docker_container:
+        name: http-api
+        image: gcr.io/radicle-services/http-api:latest
+        volumes:
+          - /app:/app
+        #ports:
+        #  - "8777:8777"
+        network_mode: radicle_containers
+        restart_policy: always
+
+    - name: Start git-server
+      docker_container:
+        name: git-server
+        image: gcr.io/radicle-services/git-server:latest
+        volumes:
+          - /app:/app
+        #ports:
+        #  - "8778:8778"
+        network_mode: radicle_containers
+
+    - name: Copy Caddyfile
+      copy:
+        src: ../Caddyfile
+        dest: /app/Caddyfile
+    
+    - name: Start Caddy
+      docker_container:
+        name: caddy
+        image: caddy:2.4.5
+        volumes:
+          - /app/Caddyfile:/etc/caddy/Caddyfile
+        ports:
+          - "80:80"
+          - "443:443"
+          - "8777:8777"
+          - "8778:8778"
+        env:
+          RADICLE_DOMAIN: "{{ RAD_ORG }}.{{ RAD_DOMAIN }}"
+        network_mode: radicle_containers
+
+    - name: Wait for /app/radicle/identity to be created
+      wait_for:
+        path: /app/radicle/identity
+
+    - name: Grab a copy of identity file
+      fetch:
+        src: /app/radicle/identity
+        dest: ../keys/{{ RAD_ORG }}.key
+        flat: yes

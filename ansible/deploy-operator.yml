@@ -1,0 +1,106 @@
+# SPDX-License-Identifier: Apache-2.0
+
+#################################################
+# Deploy operator on your server
+#################################################
+---
+- hosts: all
+  vars:
+      ansible_python_interpreter: /usr/bin/python3
+      ansible_ssh_common_args: '-o StrictHostKeyChecking=no'
+
+  pre_tasks:
+    - name: Install apt packages
+      apt:
+        name: "{{ item }}"
+        state: present
+        update_cache: yes
+      with_items:
+        - postgresql
+        - postgresql-contrib
+        - python3-pip
+
+    - name: Install Python packages
+      pip:
+        name: "{{ item }}"
+        state: present
+      with_items:
+        - psycopg2-binary
+        - docker-py
+
+  tasks:
+    - name: Create radicle database
+      postgresql_db:
+        state: present
+        name: "{{ db_name }}"
+      become: yes
+      become_user: postgres
+
+    - name: Create postgres user
+      postgresql_user:
+        state: present
+        name: "{{ db_user }}"
+        password: "{{ db_password }}"
+        encrypted: yes
+      become: yes
+      become_user: postgres
+
+    - name: Grant access to user
+      postgresql_privs:
+        type: database
+        database: "{{ db_name }}"
+        roles: "{{ db_user }}"
+        grant_option: no
+        privs: all
+      become: yes
+      become_user: postgres
+
+    - name: Create Directories
+      file:
+        path: "{{ item }}"
+        state: directory
+        owner: 1000
+        group: 1000
+      with_items:
+      - /app/keys
+      - /app/db
+
+    - name: Copy setup.sql
+      copy:
+        src: ../db/setup.sql
+        dest: /app/db/setup.sql
+
+    - name: Run setup.sql
+      shell: psql -U {{ db_user }} -d {{ db_name }} -h 127.0.0.1 -f /app/db/setup.sql
+      environment:
+        PGPASSWORD: "{{ db_password }}"
+
+    - name: Copy .env
+      copy:
+        src: ../.env.operator
+        dest: /app/.env
+
+    - name: Copy SSH key
+      copy:
+        src: ~/.ssh/{{ local_ssh_name }}
+        dest: ~/.ssh/{{ local_ssh_name }}
+
+    - name: Start radicle-cloud container
+      docker_container:
+        name: radicle-cloud
+        image: gcr.io/radicle-services/radicle-cloud:latest
+        volumes:
+          - /app/keys:/keys
+          - /app/.env:/.env
+          - /root/.ssh/{{ local_ssh_name }}:/home/ops/.ssh/{{ local_ssh_name }}
+        restart_policy: always
+        network_mode: host
+        pull: true
+
+    - name: Start and enable services
+      service: 
+        name: "{{ item }}"
+        state: started
+        enabled: yes
+      with_items:
+        - postgresql
