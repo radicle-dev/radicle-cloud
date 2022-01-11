@@ -10,16 +10,12 @@ import (
 	"radicle-cloud/db"
 	"radicle-cloud/eth"
 	"radicle-cloud/utils"
-	"sync"
 	"time"
 
 	"github.com/joho/godotenv"
 )
 
 var l *log.Logger
-
-// queue(s) to be processed for each org
-var queues sync.Map
 
 func init() {
 	l = log.New(os.Stderr, "[MAIN]	", log.Ldate|log.Ltime|log.Lshortfile)
@@ -34,6 +30,7 @@ func main() {
 		time.Sleep(time.Second)
 	}
 
+	channels := map[string]chan eth.Event{}
 	ethEvents := make(chan eth.Event)
 	stateEvents := make(chan db.Dep)
 	go runEthListener(ethEvents, &currentBlock)
@@ -52,52 +49,37 @@ func main() {
 			stateAfterRemoval(&e, &currentBlock)
 		}
 
-		if queue, ok := queues.LoadOrStore(e.Org, utils.NewEventQueue(e)); ok {
-			// queue already exists, and a goroutine is running, just add event
-			q := queue.(*utils.EventQueue)
-			q.AddEvent(e)
-			// between LoadOrStore and AddEvent, queue might get deleted from map
-			if _, ok := queues.LoadOrStore(e.Org, q); !ok {
-				// re-spawn another goroutine for this org
-				go processEventsForOrg(e.Org, stateEvents)
-			}
-		} else {
-			// spawn a goroutine to process newly created queue
-			go processEventsForOrg(e.Org, stateEvents)
+		ch, chCreated := getOrCreateOrgChannel(e.Org, &channels)
+		if chCreated {
+			go processEventsForOrg(e.Org, ch, stateEvents)
 		}
+		ch <- e
 	}
 }
 
-func processEventsForOrg(org string, stateEvents chan db.Dep) {
-	queue, ok := queues.Load(org)
-	if !ok {
-		l.Fatal("Queue was missing for org", org)
+func getOrCreateOrgChannel(org string, channels *map[string]chan eth.Event) (chan eth.Event, bool) {
+	chs := *channels
+	if ch, ok := chs[org]; ok {
+		return ch, false
 	}
-	q := queue.(*utils.EventQueue)
 
-	tries := 0
-	for {
-		if q.Len() == 0 {
-			// lock and check again
-			q.Lock()
-			if q.UnsafeLen() == 0 {
-				// all done, take out org from queues
-				queues.Delete(org)
-				q.Unlock()
+	chs[org] = make(chan eth.Event, 100)
+	return chs[org], true
+}
+
+func processEventsForOrg(org string, ch chan eth.Event, stateEvents chan db.Dep) {
+	for e := range ch {
+		tries := 3
+		for {
+			tries--
+			if ok := processEvent(e, stateEvents); ok {
 				break
 			}
-			q.Unlock()
-		}
-		if processEvent(q.PeekEvent(), stateEvents) {
-			q.EatEvent()
-			tries = 0
-		} else {
-			tries++
-			if tries == 3 {
-				l.Fatalf("Failed to process event %+v after 3 tries\n", q.PeekEvent())
+
+			if tries == 0 {
+				l.Fatal("Failed to process event for org", org, e)
 			}
-			// sleep 15s and try again
-			time.Sleep(time.Second * 15)
+			time.Sleep(time.Second * 10)
 		}
 	}
 }
