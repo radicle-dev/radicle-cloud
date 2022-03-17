@@ -19,6 +19,38 @@
         - postgresql
         - postgresql-contrib
         - python3-pip
+        - ca-certificates
+        - curl
+        - gnupg
+        - lsb-release
+
+    - name: Add Docker signing key
+      ansible.builtin.apt_key:
+        url: https://download.docker.com/linux/ubuntu/gpg
+        keyring: /usr/share/keyrings/docker-archive-keyring.gpg
+        state: present
+
+    - shell: dpkg --print-architecture
+      register: dpkg_architecture
+
+    - shell: lsb_release -cs
+      register: lsb_release
+
+    - name: Add specified repository into sources list
+      ansible.builtin.apt_repository:
+        filename: docker
+        repo: deb [arch={{ dpkg_architecture.stdout }} signed-by=/usr/share/keyrings/docker-archive-keyring.gpg] https://download.docker.com/linux/ubuntu {{ lsb_release.stdout }} stable
+        state: present
+
+    - name: Install Docker package
+      apt:
+        name: "{{ item }}"
+        state: present
+        update_cache: yes
+      with_items:
+        - docker-ce
+        - docker-ce-cli
+        - containerd.io
 
     - name: Install Python packages
       pip:
@@ -95,10 +127,10 @@
           - /root/.ssh/{{ local_ssh_name }}:/home/ops/.ssh/{{ local_ssh_name }}
         restart_policy: always
         network_mode: host
-        pull: true
+        pull: yes
 
     - name: Start and enable services
-      service: 
+      service:
         name: "{{ item }}"
         state: started
         enabled: yes
